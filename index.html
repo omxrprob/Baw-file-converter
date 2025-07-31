@@ -1,75 +1,147 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>.bawi Converter</title>
+  <title>.bawi/.bawv Converter</title>
 </head>
 <body>
-  <h1>.bawi Converter (Black and White Image)</h1>
+  <h1>.bawi / .bawv Converter</h1>
 
-  <input type="file" id="imageInput" accept="image/*"><br><br>
+  <input type="file" id="fileInput" accept="image/*,video/*"><br><br>
 
   <label for="threshold">Threshold (0–255):</label>
   <input type="number" id="threshold" value="128" min="0" max="255"><br><br>
 
-  <button onclick="convertToBawi()">Convert and Preview</button><br><br>
+  <label for="scale">Frame Size (for video, e.g. 64):</label>
+  <input type="number" id="scale" value="64" min="8" max="256"><br><br>
+
+  <label for="fps">Video FPS:</label>
+  <input type="number" id="fps" value="5" min="1" max="30"><br><br>
+
+  <button onclick="convertFile()">Convert and Preview</button><br><br>
 
   <canvas id="previewCanvas"></canvas><br><br>
 
   <script>
-    function convertToBawi() {
-      const input = document.getElementById('imageInput').files[0];
-      const threshold = parseInt(document.getElementById('threshold').value);
-      const previewCanvas = document.getElementById('previewCanvas');
-      const ctx = previewCanvas.getContext('2d');
+    function convertFile() {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) return alert("Upload an image or video.");
 
-      if (!input) {
-        alert("Upload an image first.");
-        return;
+      if (file.type.startsWith("image/")) {
+        convertImageToBawi(file);
+      } else if (file.type.startsWith("video/")) {
+        convertVideoToBawv(file);
+      } else {
+        alert("Unsupported file type.");
       }
+    }
+
+    function convertImageToBawi(file) {
+      const threshold = parseInt(document.getElementById('threshold').value);
+      const canvas = document.getElementById('previewCanvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
 
       const reader = new FileReader();
       reader.onload = function (e) {
-        const img = new Image();
         img.onload = function () {
-          previewCanvas.width = img.width;
-          previewCanvas.height = img.height;
+          canvas.width = img.width;
+          canvas.height = img.height;
           ctx.drawImage(img, 0, 0);
-          const imageData = ctx.getImageData(0, 0, img.width, img.height);
-          const pixels = imageData.data;
+          const data = ctx.getImageData(0, 0, img.width, img.height);
+          const pixels = data.data;
 
-          // Convert to black and white in the imageData
+          // Convert to B/W
           for (let i = 0; i < pixels.length; i += 4) {
-            const avg = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
-            const value = avg > threshold ? 255 : 0;
-            pixels[i] = pixels[i + 1] = pixels[i + 2] = value;
+            const avg = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+            const bw = avg > threshold ? 255 : 0;
+            pixels[i] = pixels[i+1] = pixels[i+2] = bw;
           }
+          ctx.putImageData(data, 0, 0);
 
-          ctx.putImageData(imageData, 0, 0); // update preview
-
-          // Generate .bawi file text
-          let data = `BAWIv1\nWIDTH=${img.width}\nHEIGHT=${img.height}\nDATA=\n`;
+          // Export .bawi
+          let bawiText = `BAWIv1\nWIDTH=${img.width}\nHEIGHT=${img.height}\nDATA=\n`;
           for (let y = 0; y < img.height; y++) {
             let row = '';
             for (let x = 0; x < img.width; x++) {
-              const i = (y * img.width + x) * 4;
-              const r = pixels[i]; // already thresholded
-              row += r === 255 ? '1' : '0';
+              const idx = (y * img.width + x) * 4;
+              row += pixels[idx] === 255 ? '1' : '0';
             }
-            data += row + '\n';
+            bawiText += row + '\n';
           }
 
-          // Trigger download
-          const blob = new Blob([data], { type: 'text/plain' });
-          const url = URL.createObjectURL(blob);
+          const blob = new Blob([bawiText], { type: 'text/plain' });
           const a = document.createElement('a');
-          a.href = url;
-          a.download = input.name.replace(/\.[^/.]+$/, "") + ".bawi";
+          a.href = URL.createObjectURL(blob);
+          a.download = file.name.replace(/\.[^/.]+$/, "") + ".bawi";
           a.click();
-          URL.revokeObjectURL(url);
         };
         img.src = e.target.result;
       };
-      reader.readAsDataURL(input);
+      reader.readAsDataURL(file);
+    }
+
+    async function convertVideoToBawv(file) {
+      const threshold = parseInt(document.getElementById('threshold').value);
+      const scale = parseInt(document.getElementById('scale').value);
+      const fps = parseInt(document.getElementById('fps').value);
+      const canvas = document.getElementById('previewCanvas');
+      const ctx = canvas.getContext('2d');
+
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.src = url;
+      video.crossOrigin = "anonymous";
+      video.muted = true;
+      await video.play();
+
+      const duration = Math.min(video.duration, 5); // max 5s
+      const frameCount = Math.floor(duration * fps);
+
+      canvas.width = scale;
+      canvas.height = scale;
+
+      let bawvText = `BAWVv1\nWIDTH=${scale}\nHEIGHT=${scale}\nFPS=${fps}\nFRAMES=${frameCount}\nDATA=\n`;
+      const frames = [];
+
+      for (let i = 0; i < frameCount; i++) {
+        video.currentTime = i / fps;
+        await new Promise(r => setTimeout(r, 150));
+
+        ctx.drawImage(video, 0, 0, scale, scale);
+        const data = ctx.getImageData(0, 0, scale, scale).data;
+        let frameRow = '';
+
+        for (let j = 0; j < data.length; j += 4) {
+          const avg = (data[j] + data[j + 1] + data[j + 2]) / 3;
+          frameRow += avg > threshold ? '1' : '0';
+        }
+
+        frames.push(frameRow);
+        bawvText += frameRow + '\n';
+      }
+
+      // Play preview loop
+      let current = 0;
+      setInterval(() => {
+        const frame = frames[current];
+        const imageData = ctx.createImageData(scale, scale);
+        for (let i = 0; i < frame.length; i++) {
+          const val = frame[i] === '1' ? 255 : 0;
+          imageData.data[i*4] = val;
+          imageData.data[i*4+1] = val;
+          imageData.data[i*4+2] = val;
+          imageData.data[i*4+3] = 255;
+        }
+        ctx.putImageData(imageData, 0, 0);
+        current = (current + 1) % frames.length;
+      }, 1000 / fps);
+
+      // Download .bawv
+      const blob = new Blob([bawvText], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = file.name.replace(/\.[^/.]+$/, "") + ".bawv";
+      a.click();
     }
   </script>
 </body>
